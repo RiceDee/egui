@@ -224,27 +224,10 @@ static SAVE_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64
 ///
 /// The folder itself is not synced, so after a power loss some file systems may keep the previous
 /// file rather than the new one.
-///
-/// A symlink is kept, and the file it leads to is the one replaced.
 fn write_atomically(
     file_path: &Path,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    // A rename would also replace a read-only file, or a device or pipe. Refuse the first, as
-    // `File::create` does, and write into the others.
-    match std::fs::OpenOptions::new().write(true).open(file_path) {
-        Ok(existing) => {
-            if !existing.metadata()?.is_file() {
-                let mut writer = std::io::BufWriter::new(existing);
-                write(&mut writer)?;
-                return writer.flush();
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err),
-    }
-    let file_path = &follow_symlinks(file_path)?;
-
     // Each save, in this process or another, gets its own temporary file, created exclusively.
     // A name left behind by an earlier process with the same id is skipped, not reused.
     let mut attempts = 0;
@@ -279,25 +262,6 @@ fn write_atomically(
         std::fs::remove_file(&tmp_path).ok();
     }
     result
-}
-
-/// The file `path` leads to, which may not exist yet (so this is not [`std::fs::canonicalize`]).
-fn follow_symlinks(path: &Path) -> std::io::Result<PathBuf> {
-    let mut path = path.to_owned();
-    // Linux follows 40 links too.
-    for _ in 0..40 {
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_symlink() => {
-                // A relative link starts from the folder it is in.
-                let target = std::fs::read_link(&path)?;
-                path.pop();
-                path.push(target);
-            }
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
-            _ => return Ok(path),
-        }
-    }
-    Err(std::io::Error::other("too many symbolic links"))
 }
 
 // ----------------------------------------------------------------------------
